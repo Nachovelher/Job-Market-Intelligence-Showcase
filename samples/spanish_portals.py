@@ -1,4 +1,4 @@
-"""Módulo de ingesta multi-portal para el mercado tecnológico en España / Barcelona:
+"""Módulo de ingesta multi-portal para el mercado tecnológico en España (Barcelona, Madrid):
 - Extracción de Schema.org/JobPosting en JSON-LD con tolerancia a caracteres de control (Randstad, Tecnoempleo).
 - Hidratación SSR Next.js (__NEXT_DATA__) y filtrado incremental sobre sitemaps XML (Manfred).
 - Impersonación de huella TLS de navegador con curl_cffi y normalización HTML -> Markdown (markdownify).
@@ -34,6 +34,18 @@ def _html_to_md(raw_html: str) -> str:
     return text.strip()
 
 
+def _jsonld_location(job_ld: dict, fallback: str) -> str:
+    """Extrae 'Localidad, Spain' desde jobLocation de un grafo JobPosting JSON-LD (objeto único o lista)."""
+    job_loc = job_ld.get("jobLocation")
+    if isinstance(job_loc, list):
+        job_loc = job_loc[0] if job_loc else None
+    addr = job_loc.get("address") if isinstance(job_loc, dict) else None
+    if not isinstance(addr, dict):
+        return fallback
+    locality = addr.get("addressLocality") or addr.get("addressRegion")
+    return f"{locality}, Spain" if locality else fallback
+
+
 def fetch_linkedin_guest_jd(job_url: str) -> str:
     """Recupera la descripción completa de una oferta de LinkedIn usando el endpoint guest público."""
     m = LI_JOB_ID_RE.search(job_url or "")
@@ -55,7 +67,7 @@ def fetch_linkedin_guest_jd(job_url: str) -> str:
 
 
 def scrape_randstad(terms: list[str], location: str = "barcelona", max_per_term: int = 8) -> pd.DataFrame:
-    """Busca ofertas en Randstad España (randstad.es) y extrae el JobPosting JSON-LD."""
+    """Busca ofertas en Randstad España (randstad.es) para una ciudad y extrae el JobPosting JSON-LD."""
     rows: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     loc_slug = re.sub(r"[^a-z0-9]+", "-", location.lower()).strip("-")
@@ -98,20 +110,11 @@ def scrape_randstad(terms: list[str], location: str = "barcelona", max_per_term:
                     if isinstance(job_ld.get("experienceRequirements"), str):
                         desc_html += "<br><br><strong>Requisitos:</strong><br>" + job_ld["experienceRequirements"]
 
-                    loc_str = f"{location.title()}, Spain"
-                    job_loc = job_ld.get("jobLocation")
-                    if isinstance(job_loc, dict):
-                        addr = job_loc.get("address", {})
-                        if isinstance(addr, dict):
-                            locality = addr.get("addressLocality") or addr.get("addressRegion")
-                            if locality:
-                                loc_str = f"{locality}, Spain"
-
                     rows.append({
                         "site": "randstad",
                         "title": title,
                         "company": "Randstad España",
-                        "location": loc_str,
+                        "location": _jsonld_location(job_ld, f"{location.title()}, Spain"),
                         "job_url": detail_url,
                         "job_url_direct": detail_url,
                         "description": _html_to_md(desc_html),
@@ -125,7 +128,7 @@ def scrape_randstad(terms: list[str], location: str = "barcelona", max_per_term:
 
 
 def scrape_robert_walters(terms: list[str], location: str = "Barcelona, Catalonia, Spain") -> pd.DataFrame:
-    """Extrae ofertas activas de Robert Walters en Barcelona mediante LinkedIn Guest Search + JobPosting API."""
+    """Extrae ofertas activas de Robert Walters en `location` mediante LinkedIn Guest Search + JobPosting API."""
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
@@ -173,7 +176,7 @@ def scrape_robert_walters(terms: list[str], location: str = "Barcelona, Cataloni
                     "site": "robertwalters",
                     "title": title_el.get_text(strip=True),
                     "company": "Robert Walters",
-                    "location": loc_el.get_text(strip=True) if loc_el else "Barcelona, Spain",
+                    "location": loc_el.get_text(strip=True) if loc_el else location,
                     "job_url": href,
                     "job_url_direct": href,
                     "description": desc,
@@ -185,9 +188,10 @@ def scrape_robert_walters(terms: list[str], location: str = "Barcelona, Cataloni
     return pd.DataFrame(rows)
 
 
-def scrape_manfred(max_offers: int = 25) -> pd.DataFrame:
-    """Extrae ofertas activas de Manfred (getmanfred.com) filtrando su sitemap de ofertas recientes."""
+def scrape_manfred(cities: list[str] | None = None, max_offers: int = 25) -> pd.DataFrame:
+    """Extrae ofertas activas de Manfred (getmanfred.com) filtrando su sitemap por ciudades objetivo o remoto."""
     rows: list[dict[str, Any]] = []
+    wanted = [c.lower() for c in (cities or ["barcelona", "madrid"])]
     try:
         r = requests.get("https://www.getmanfred.com/sitemap-offers.xml", impersonate="chrome", timeout=15)
         if r.status_code != 200:
@@ -225,7 +229,7 @@ def scrape_manfred(max_offers: int = 25) -> pd.DataFrame:
                 else:
                     loc_summary = str(loc_raw or "")
                 is_remote = bool(offer.get("remote"))
-                if "barcelona" not in loc_summary.lower() and not is_remote:
+                if not is_remote and not any(c in loc_summary.lower() for c in wanted):
                     continue
 
                 title = str(offer.get("title") or "").strip()
@@ -264,8 +268,10 @@ def scrape_manfred(max_offers: int = 25) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def scrape_tecnoempleo(terms: list[str], province_code: str = "233", max_per_term: int = 6) -> pd.DataFrame:
-    """Extrae ofertas de Tecnoempleo en Barcelona (pr=233) usando su JSON-LD JobPosting."""
+def scrape_tecnoempleo(
+    terms: list[str], province_code: str = "240", location: str = "Barcelona", max_per_term: int = 6
+) -> pd.DataFrame:
+    """Extrae ofertas de Tecnoempleo por provincia (pr=240 Barcelona, pr=263 Madrid) vía JSON-LD JobPosting."""
     rows: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
@@ -307,7 +313,7 @@ def scrape_tecnoempleo(terms: list[str], province_code: str = "233", max_per_ter
                         "site": "tecnoempleo",
                         "title": title,
                         "company": html.unescape(str(company).strip()),
-                        "location": "Barcelona, Spain",
+                        "location": _jsonld_location(job_ld, f"{location}, Spain"),
                         "job_url": detail_url,
                         "job_url_direct": detail_url,
                         "description": desc,

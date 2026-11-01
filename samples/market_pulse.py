@@ -1,4 +1,4 @@
-"""Motor de deduplicación inter-portal (Entity Resolution) y analítica agregada Market Pulse."""
+"""Motor de deduplicación inter-portal sensible a ciudad (Entity Resolution) y analítica Market Pulse."""
 from __future__ import annotations
 
 import re
@@ -7,13 +7,15 @@ from collections import Counter
 
 import pandas as pd
 
+from cities import City, city_of_jd, detect_city
+
 INCLUDE = re.compile(
     r"\b(?:data|datos|IA|AI|ML|BI|LLM|python|sql|erp|qlik|power\s*bi|tableau|supply\s+chain)\b"
     r"|machine learning|analytic|anal[ií]tic|analista|intelig|business\s+intelligence",
     re.I,
 )
 EXCLUDE = re.compile(
-    r"\b(?:senior|sr\.?|leads?|principal|head|director|vp|chief|staff|manager|graduate|researcher|stager|phd)\b"
+    r"\b(?:senior|sr\.?|leads?|principal|head|director|vp|chief|staff|manager|graduate|researcher|stager|phd|sap|abap)\b"
     r"|pr[aá]cticas|becari|intern(?:ship)?|postdoc",
     re.I,
 )
@@ -48,12 +50,21 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")[:60]
 
 
-def canonical_job_key(company: str, title: str) -> str:
-    """Genera una clave canónica inmune a acentos y sufijos societarios para deduplicar entre portales."""
+def canonical_job_key(company: str, title: str, city: str = "") -> str:
+    """Genera una clave canónica inmune a acentos y sufijos societarios, particionada por ciudad si está disponible."""
     comp_slug = slugify(company or "")
     comp_root = comp_slug.split("-")[0] if comp_slug else "unknown"
     title_slug = slugify(title or "")
-    return f"{title_slug}|{comp_root}"
+    city_slug = slugify(city or "")
+    return f"{title_slug}|{comp_root}|{city_slug}" if city_slug else f"{title_slug}|{comp_root}"
+
+
+def tag_city(frame: pd.DataFrame, cities: list[City], default: str) -> pd.DataFrame:
+    """Etiqueta cada fila con su ciudad canónica según alias metropolitanos o ciudad de origen."""
+    if frame is None or frame.empty:
+        return frame
+    locs = frame["location"] if "location" in frame.columns else pd.Series("", index=frame.index)
+    return frame.assign(city=[detect_city(str(loc), cities, default) for loc in locs.fillna("")])
 
 
 def filter_titles(jobs: pd.DataFrame) -> pd.DataFrame:
@@ -64,12 +75,13 @@ def filter_titles(jobs: pd.DataFrame) -> pd.DataFrame:
 
 
 def dedupe_across_sites(jobs: pd.DataFrame) -> pd.DataFrame:
-    """Colapsa la misma oferta publicada en múltiples portales conservando la descripción más extensa."""
+    """Colapsa la misma oferta publicada en múltiples portales dentro de una misma ciudad conservando la JD más extensa."""
     if jobs.empty:
         return jobs
+    cities_col = jobs["city"].fillna("") if "city" in jobs.columns else pd.Series("", index=jobs.index)
     keys = [
-        canonical_job_key(str(c or ""), str(t or ""))
-        for c, t in zip(jobs["company"].fillna(""), jobs["title"].fillna(""))
+        canonical_job_key(str(c or ""), str(t or ""), str(ct or ""))
+        for c, t, ct in zip(jobs["company"].fillna(""), jobs["title"].fillna(""), cities_col)
     ]
     jd_len = jobs["description"].fillna("").astype(str).str.len()
     return (
@@ -118,3 +130,20 @@ def compute_skills_ranking(texts: list[str]) -> list[dict]:
             })
     ranking.sort(key=lambda x: x["count"], reverse=True)
     return ranking
+
+
+def compute_multi_city_pulse(jds: list[dict], cities: list[City]) -> dict[str, dict]:
+    """Particiona una colección de JDs por ciudad y calcula métricas tecnológicas independientes por hub."""
+    assigned = [city_of_jd(jd, cities) for jd in jds]
+    result: dict[str, dict] = {}
+    for city in cities:
+        city_texts = [
+            f"{jd.get('title', '')}\n{jd.get('body', '')}"
+            for jd, jc in zip(jds, assigned)
+            if jc == city.name
+        ]
+        result[city.name] = {
+            "total_jds_analyzed": len(city_texts),
+            "skills_ranking": compute_skills_ranking(city_texts),
+        }
+    return result

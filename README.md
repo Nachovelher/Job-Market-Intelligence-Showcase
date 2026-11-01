@@ -3,22 +3,24 @@
 [![CI](https://img.shields.io/badge/CI-passing%20(Python%203.11%20%7C%203.12)-brightgreen.svg)](.github/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Portals](https://img.shields.io/badge/connectors-7%20Job%20Portals%20(JSON--LD%20%7C%20SSR%20%7C%20TLS)-informational.svg)](#1-ingesta-multi-portal-resiliente-samplesspanish_portalspy)
-[![Tests](https://img.shields.io/badge/tests-6%20passed%20(unittest)-brightgreen.svg)](tests/test_showcase.py)
+[![Hubs](https://img.shields.io/badge/hubs-Barcelona%20%7C%20Madrid-007ec6.svg)](samples/cities.py)
+[![Tests](https://img.shields.io/badge/tests-11%20passed%20(unittest)-brightgreen.svg)](tests/test_showcase.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Side Project](https://img.shields.io/badge/project-data%20engineering%20%26%20NLP-8a2be2.svg)](#)
 
 > [!IMPORTANT]
 > **📌 Nota sobre Arquitectura y Muestras de Código (*Code Samples*)**
 >
-> **Job Market Intelligence** es un **pipeline ELT de ingeniería de datos, extracción web multi-portal y análisis NLP del mercado laboral tecnológico**. El repositorio completo de orquestación (`Nachovelher/Job-Market-Intelligence`) se mantiene en privado al contener configuraciones de entorno, reglas de notificación personalizadas y cachés locales de ejecución.
+> **Job Market Intelligence** es un **pipeline ELT multi-ciudad de ingeniería de datos, extracción web multi-portal y análisis NLP del mercado laboral tecnológico (Barcelona y Madrid)**. El repositorio completo de orquestación (`Nachovelher/Job-Market-Intelligence`) se mantiene en privado al contener configuraciones de entorno, reglas de notificación personalizadas y cachés locales de ejecución.
 >
 > Este repositorio público actúa como **escaparate técnico y de arquitectura** e incluye:
 > - El estudio empírico generado por el pipeline sobre el ecosistema de datos en Barcelona ([`docs/MARKET_PULSE_BARCELONA.md`](docs/MARKET_PULSE_BARCELONA.md)).
-> - **Módulos reales de extracción, deduplicación, clasificación NLP y analítica en [`samples/`](samples/):**
+> - **Módulos reales de taxonomía geográfica, extracción, deduplicación, clasificación NLP y analítica en [`samples/`](samples/):**
+>   - [`samples/cities.py`](samples/cities.py) — Taxonomía multi-ciudad declarativa (`Barcelona`, `Madrid`), resolución de áreas metropolitanas por alias (*Vallès, Sant Cugat, Alcobendas, Tres Cantos, Las Rozas…*) y mapeo de códigos provinciales por portal (`pr=240` / `pr=263`).
 >   - [`samples/spanish_portals.py`](samples/spanish_portals.py) — Conectores especializados con impersonación TLS (`curl_cffi`), extracción de grafos `Schema.org/JobPosting` en JSON-LD, hidratación SSR Next.js (`__NEXT_DATA__`) y normalización HTML $\rightarrow$ Markdown.
 >   - [`samples/jd_matcher.py`](samples/jd_matcher.py) — Motor determinista de reglas NLP multilingüe (detección de umbrales de experiencia e idiomas obligatorios en ES/EN) y puntuación híbrida mediante taxonomías ponderadas + similitud coseno TF-IDF.
->   - [`samples/market_pulse.py`](samples/market_pulse.py) — Resolución de entidades inter-portal (`canonical_job_key`, `dedupe_across_sites`) y agregación estadística de demanda tecnológica.
->   - [`tests/test_showcase.py`](tests/test_showcase.py) — Suite de tests unitarios ejecutada automáticamente en GitHub Actions (Python 3.11 y 3.12).
+>   - [`samples/market_pulse.py`](samples/market_pulse.py) — Resolución de entidades inter-portal particionada por ciudad (`canonical_job_key`, `dedupe_across_sites`) y agregación estadística multi-ciudad (`compute_multi_city_pulse`).
+>   - [`tests/test_showcase.py`](tests/test_showcase.py) — Suite de 11 tests unitarios ejecutada automáticamente en GitHub Actions (Python 3.11 y 3.12).
 
 ---
 
@@ -28,9 +30,9 @@ Los portales de empleo modernos publican la misma vacante replicada en múltiple
 
 Este proyecto resuelve el problema mediante un **pipeline ELT modular en Python** que:
 1. **Extrae y normaliza** descripciones completas de puesto (*Job Descriptions*) desde **7 portales internacionales y españoles** convirtiendo el HTML crudo en documentos Markdown estructurados con metadatos YAML (*frontmatter*).
-2. **Resuelve duplicados entre portales (*Cross-Portal Entity Resolution*)** generando claves canónicas inmunes a tildes, signos de puntuación y sufijos societarios (`S.L.`, `S.A.`, `Spain`), conservando automáticamente la versión con mayor riqueza descriptiva.
+2. **Resuelve duplicados entre portales respetando la partición geográfica (*City-Aware Cross-Portal Entity Resolution*)** generando claves canónicas (`title_slug|company_root|city_slug`) inmunes a tildes, signos de puntuación y sufijos societarios (`S.L.`, `S.A.`, `Spain`), colapsando réplicas entre portales dentro de una misma ciudad sin fusionar vacantes homónimas abiertas simultáneamente en Barcelona y Madrid.
 3. **Filtra y puntúa semánticamente en local (0–100%)** cada vacante antes de invocar modelos de lenguaje (LLMs), descartando en milisegundos ofertas que incumplen restricciones duras (exigencia de $>N$ años de experiencia o terceros idiomas obligatorios a nivel C1/nativo) y ordenando la cola por afinidad técnica.
-4. **Genera inteligencia de mercado (*Market Pulse*)** cuantificando la cuota real de mercado de cada tecnología (SQL, Python, Power BI, Qlik, sistemas ERP, Cloud, dbt, LLMs) en el área metropolitana de Barcelona.
+4. **Genera inteligencia de mercado comparativa (*Multi-City Market Pulse*)** cuantificando la cuota real de mercado de cada tecnología (SQL, Python, Power BI, Qlik, sistemas ERP, Cloud, dbt, LLMs) desglosada por hub tecnológico (**Barcelona y Madrid**).
 
 ---
 
@@ -78,8 +80,9 @@ flowchart LR
 * **Hidratación SSR Next.js y filtrado por Sitemap (Manfred):** Descarga el índice `sitemap-offers.xml`, filtra por expresión regular los *slugs* técnicos más recientes y extrae el árbol de estado de servidor (`__NEXT_DATA__` $\rightarrow$ `props.pageProps.offer`), obteniendo la banda salarial exacta (`salaryMin`–`salaryMax`), modalidad remota y estado de activación.
 * **Rescate asíncrono sin navegador (`fetch_linkedin_guest_jd`):** Cuando un agregador devuelve una URL de LinkedIn truncada o sin cuerpo por *rate-limiting*, el conector consulta el endpoint ligero `/jobs-guest/jobs/api/jobPosting/{id}` con impersonación TLS de Chrome (`curl_cffi`), logrando recuperar el 100% del texto sin levantar instancias pesadas de Playwright/Selenium.
 
-### 2. Resolución de Entidades Inter-Portal ([`samples/market_pulse.py`](samples/market_pulse.py))
-Una misma vacante suele publicarse simultáneamente en el portal corporativo, en LinkedIn, en Indeed y en una consultora de selección. La función `dedupe_across_sites()` normaliza mediante descomposición Unicode `NFKD` el título del puesto y la raíz de la empresa (`canonical_job_key`), agrupa las colisiones entre portales y selecciona determinísticamente el registro con mayor longitud de descripción (`_jd_len`).
+### 2. Taxonomía Multi-Ciudad y Resolución de Entidades ([`samples/cities.py`](samples/cities.py) & [`samples/market_pulse.py`](samples/market_pulse.py))
+* **Normalización metropolitana (`City`, `detect_city`, `city_of_jd`):** Clasifica ubicaciones heterogéneas devueltas por JSON-LD o agregadores (*"Sant Cugat del Vallès, Catalonia"*, *"Alcobendas, Community of Madrid"*) en su hub correspondiente (**Barcelona** o **Madrid**), manteniendo compatibilidad retroactiva con documentos históricos mediante jerarquía de evidencia (`frontmatter.city` $\rightarrow$ `location` $\rightarrow$ ciudad de búsqueda).
+* **Deduplicación inter-portal sensible a ciudad (`dedupe_across_sites`):** Una misma vacante suele publicarse simultáneamente en LinkedIn, Indeed y portales especializados, mientras que una gran empresa puede abrir el mismo título simultáneamente en Madrid y Barcelona. `canonical_job_key(company, title, city)` normaliza mediante descomposición Unicode `NFKD` título, raíz corporativa y ciudad para colapsar duplicados inter-portal conservando la descripción más extensa (`_jd_len`) sin perder vacantes de otros hubs.
 
 ### 3. Clasificación NLP y Similitud Léxica ([`samples/jd_matcher.py`](samples/jd_matcher.py))
 * **Extractor multilingüe de seniority (`extract_min_experience_years`):** Evalúa expresiones regulares en español e inglés (*"mínimo de 5 años"*, *"at least 6+ years of experience"*, *"experiencia mínima: 4 a 6 años"*) para detectar barreras duras de experiencia antes de consumir tokens de inferencia.

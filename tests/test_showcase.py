@@ -12,6 +12,7 @@ SAMPLES = ROOT / "samples"
 if str(SAMPLES) not in sys.path:
     sys.path.insert(0, str(SAMPLES))
 
+from cities import DEFAULT_CITIES, city_of_jd, detect_city, load_cities  # noqa: E402
 from jd_matcher import (  # noqa: E402
     _cosine_similarity,
     _tokenize,
@@ -20,14 +21,18 @@ from jd_matcher import (  # noqa: E402
 )
 from market_pulse import (  # noqa: E402
     canonical_job_key,
+    compute_multi_city_pulse,
     compute_skills_ranking,
     dedupe_across_sites,
     detect_modality,
     filter_titles,
     make_bar,
     slugify,
+    tag_city,
 )
-from spanish_portals import _html_to_md  # noqa: E402
+from spanish_portals import _html_to_md, _jsonld_location  # noqa: E402
+
+CITIES = list(DEFAULT_CITIES)
 
 
 class TestShowcaseSuite(unittest.TestCase):
@@ -91,6 +96,54 @@ class TestShowcaseSuite(unittest.TestCase):
         self.assertEqual(len(deduped), 1)
         self.assertEqual(deduped.iloc[0]["site"], "indeed")
 
+    def test_dedupe_across_sites_preserves_distinct_cities(self) -> None:
+        df = pd.DataFrame([
+            {"site": "linkedin", "company": "Randstad España", "title": "Data Analyst", "city": "Barcelona", "description": "Short BCN"},
+            {"site": "randstad", "company": "Randstad", "title": "Data Analyst", "city": "Barcelona", "description": "Complete BCN JD"},
+            {"site": "randstad", "company": "Randstad España", "title": "Data Analyst", "city": "Madrid", "description": "Complete MAD JD"},
+        ])
+        deduped = dedupe_across_sites(df)
+        self.assertEqual(len(deduped), 2)
+        self.assertEqual(set(deduped["city"]), {"Barcelona", "Madrid"})
+
+    def test_city_detection_and_metropolitan_aliases(self) -> None:
+        self.assertEqual(detect_city("Alcobendas, Community of Madrid, Spain", CITIES, "Barcelona"), "Madrid")
+        self.assertEqual(detect_city("Sant Cugat del Vallès, Catalonia, Spain", CITIES, "Madrid"), "Barcelona")
+        self.assertEqual(detect_city("Tres Cantos, Spain", CITIES, "Barcelona"), "Madrid")
+        self.assertEqual(detect_city("Remoto, Spain", CITIES, "Barcelona"), "Barcelona")
+
+    def test_load_cities_and_legacy_fallback(self) -> None:
+        cfg = {
+            "locations": [
+                {"city": "Madrid", "aliases": ["Madrid"], "linkedin_location": "Madrid, Spain", "tecnoempleo_province": "263"},
+            ]
+        }
+        cities = load_cities(cfg)
+        self.assertEqual([c.name for c in cities], ["Madrid"])
+        self.assertEqual(cities[0].tecnoempleo_province, "263")
+        self.assertEqual([c.name for c in load_cities({"location": "Barcelona"})], ["Barcelona"])
+        self.assertEqual([c.name for c in load_cities({})], ["Barcelona", "Madrid"])
+
+    def test_city_of_jd_and_tag_city(self) -> None:
+        self.assertEqual(city_of_jd({"city": "Madrid", "location": "Remoto, Spain"}, CITIES), "Madrid")
+        self.assertEqual(city_of_jd({"location": "Pozuelo de Alarcón, Spain"}, CITIES), "Madrid")
+        df = pd.DataFrame([{"title": "BI Analyst", "location": "Getafe, Madrid"}])
+        tagged = tag_city(df, CITIES, default="Barcelona")
+        self.assertEqual(list(tagged["city"]), ["Madrid"])
+
+    def test_multi_city_market_pulse_and_jsonld_location(self) -> None:
+        jds = [
+            {"title": "Data Analyst", "body": "SQL and Power BI", "city": "Barcelona"},
+            {"title": "Analytics Engineer", "body": "SQL, dbt and Snowflake", "location": "Madrid, Spain"},
+        ]
+        pulse = compute_multi_city_pulse(jds, CITIES)
+        self.assertEqual(pulse["Barcelona"]["total_jds_analyzed"], 1)
+        self.assertEqual(pulse["Madrid"]["total_jds_analyzed"], 1)
+        self.assertEqual(
+            _jsonld_location({"jobLocation": [{"address": {"addressLocality": "Alcobendas"}}]}, "Madrid, Spain"),
+            "Alcobendas, Spain",
+        )
+
     def test_market_pulse_and_html_normalization(self) -> None:
         self.assertEqual(slugify("Analista de Datos / BI (Híbrido)"), "analista-de-datos-bi-hibrido")
         self.assertEqual(detect_modality("Modalidad híbrido en Barcelona"), "Híbrido")
@@ -102,6 +155,7 @@ class TestShowcaseSuite(unittest.TestCase):
         df_titles = pd.DataFrame([
             {"title": "Data Analyst"},
             {"title": "Senior Data Analyst"},
+            {"title": "Analista Programador SAP ABAP"},
             {"title": "Becario BI"},
         ])
         self.assertEqual(list(filter_titles(df_titles)["title"]), ["Data Analyst"])
